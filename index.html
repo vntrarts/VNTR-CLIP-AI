@@ -17,4 +17,53 @@ function style(){let c=$('caption');c.textContent=$('words').value;c.style.fontF
 $('play').onclick=()=>{if(!file)return;stopAt=Math.min($('video').duration,+$('start').value+duration);$('video').currentTime=+$('start').value;$('video').play().catch(()=>{});};
 $('video').ontimeupdate=()=>{if(stopAt!==null&&$('video').currentTime>=stopAt){$('video').pause();stopAt=null}};
 $('save').onclick=()=>{if(!file)return;let data={application:'VNTR CLIPS AI',version:'browser-preview',source_filename:file.name,start_seconds:+$('start').value,end_seconds:Math.min($('video').duration,+$('start').value+duration),target_seconds:duration,caption_text:$('words').value,font:$('font').value,caption_color:$('color').value,caption_bottom_percent:+$('position').value};let blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});let a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='vntr-edit-plan.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+</script><script>
+/* VNTR CLIPS AI: local, real-time browser video export. */
+(function(){
+const $=id=>document.getElementById(id);
+const exportButton=document.createElement('button');
+exportButton.id='exportVideo';exportButton.textContent='Export video (local browser)';
+exportButton.disabled=true;exportButton.style.cssText='width:100%;margin-top:12px';
+const status=document.createElement('p');status.id='exportStatus';status.className='muted';status.textContent='Export records the selected clip in real time. Format depends on your browser.';
+$('save').parentNode.insertBefore(exportButton,$('save').nextSibling);exportButton.after(status);
+$('upload').addEventListener('change',()=>{exportButton.disabled=!$('upload').files.length});
+const wait=(ms)=>new Promise(r=>setTimeout(r,ms));
+function seek(v,t){return new Promise(resolve=>{if(Math.abs(v.currentTime-t)<.05)return resolve();let done=false;const finish=()=>{if(done)return;done=true;v.removeEventListener('seeked',finish);resolve()};v.addEventListener('seeked',finish);v.currentTime=t;setTimeout(finish,1800)})}
+function drawCaption(ctx,w,h){let text=$('words').value.trim();if(!text)return;let lines=text.split(/\n/).filter(Boolean).slice(0,5);let fs=Math.max(22,Math.round(w*.048));ctx.font='900 '+fs+'px '+$('font').value;ctx.textAlign='center';ctx.textBaseline='middle';ctx.lineWidth=Math.max(4,fs*.16);ctx.strokeStyle='#000';ctx.fillStyle=$('color').value;let y=h*(1-Number($('position').value)/100);lines.forEach((line,i)=>{let yy=y+(i-(lines.length-1)/2)*fs*1.25;ctx.strokeText(line,w/2,yy,w*.84);ctx.fillText(line,w/2,yy,w*.84)})}
+exportButton.onclick=async()=>{
+ const input=$('upload').files[0];if(!input)return;
+ if(!window.MediaRecorder||!HTMLCanvasElement.prototype.captureStream){status.textContent='This browser does not support video recording. Try Chrome or Edge on a computer.';return}
+ exportButton.disabled=true;status.textContent='Preparing video export…';
+ let v,stream,rec,ctxAudio,source,objectUrl;
+ try{
+  objectUrl=URL.createObjectURL(input);
+  v=document.createElement('video');v.src=objectUrl;v.playsInline=true;v.preload='auto';v.muted=false;
+  await new Promise((res,rej)=>{v.onloadedmetadata=res;v.onerror=()=>rej(Error('Cannot read video'));});
+  const start=Math.min(+$('start').value,Math.max(0,v.duration-.1));
+  const end=Math.min(v.duration,start+duration);
+  await seek(v,start);
+  const canvas=document.createElement('canvas');canvas.width=720;canvas.height=1280;
+  const ctx=canvas.getContext('2d',{alpha:false});
+  stream=canvas.captureStream(30);
+  try{ctxAudio=new (window.AudioContext||window.webkitAudioContext)();source=ctxAudio.createMediaElementSource(v);const dest=ctxAudio.createMediaStreamDestination();source.connect(dest);dest.stream.getAudioTracks().forEach(track=>stream.addTrack(track));await ctxAudio.resume()}catch(audioErr){console.warn('Audio unavailable',audioErr)}
+  const formats=['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+  const mime=formats.find(m=>MediaRecorder.isTypeSupported(m));
+  if(!mime)throw Error('No supported recording format on this browser.');
+  const chunks=[];rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:4500000});
+  rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+  const finished=new Promise((resolve,reject)=>{rec.onstop=resolve;rec.onerror=()=>reject(Error('Recording failed'))});
+  rec.start(500);
+  let stopped=false;
+  const paint=()=>{if(stopped)return;ctx.fillStyle='#000';ctx.fillRect(0,0,720,1280);if(v.readyState>=2){const scale=Math.max(720/v.videoWidth,1280/v.videoHeight),w=v.videoWidth*scale,h=v.videoHeight*scale;ctx.drawImage(v,(720-w)/2,(1280-h)/2,w,h)}drawCaption(ctx,720,1280);if(v.currentTime>=end||v.ended){stopped=true;v.pause();if(rec.state!=='inactive')rec.stop();return}requestAnimationFrame(paint)};
+  await v.play();paint();
+  status.textContent='Recording locally… Keep this tab open until export finishes.';
+  const watchdog=setTimeout(()=>{stopped=true;v.pause();if(rec.state!=='inactive')rec.stop()},Math.max(3000,(end-start+6)*1000));
+  await finished;clearTimeout(watchdog);
+  const blob=new Blob(chunks,{type:mime});if(!blob.size)throw Error('No video data was recorded');
+  const ext=mime.includes('mp4')?'mp4':'webm';const download=URL.createObjectURL(blob);const a=document.createElement('a');a.href=download;a.download='VNTR-CLIPS-AI-export.'+ext;a.click();setTimeout(()=>URL.revokeObjectURL(download),60000);
+  status.textContent='Export complete: '+ext.toUpperCase()+' ('+(blob.size/1048576).toFixed(1)+' MB). Browser export is real-time and may not include audio on all devices.';
+ }catch(err){status.textContent='Export failed: '+err.message+' — Try desktop Chrome or Edge.'}
+ finally{try{v?.pause();stream?.getTracks().forEach(t=>t.stop());ctxAudio?.close();if(objectUrl)URL.revokeObjectURL(objectUrl)}catch(e){}exportButton.disabled=false}
+};
+})();
 </script></body></html>
